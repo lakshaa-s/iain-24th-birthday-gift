@@ -4,15 +4,23 @@
 
 @layer base {
   body {
-    background-color: #142822;
-    /* woven book-cloth texture, drawn not downloaded */
+    background-color: #F4F2E4;
     background-image:
-      repeating-linear-gradient(90deg, rgba(0,0,0,.05) 0 1px, transparent 1px 3px),
-      repeating-linear-gradient(0deg,  rgba(255,255,255,.03) 0 1px, transparent 1px 3px);
+      radial-gradient(circle at 1px 1px, rgba(26,26,24,.08) 1px, transparent 0);
+    background-size: 22px 22px;
   }
-  :focus-visible {
-    outline: 2px solid #C9A227;
-    outline-offset: 2px;
+  :focus-visible { outline: 3px solid #1A1A18; outline-offset: 3px; }
+}
+
+@layer utilities {
+  .scene { perspective: 1100px; }
+  .preserve-3d { transform-style: preserve-3d; }
+  .backface-hidden { backface-visibility: hidden; }
+  /* torn-paper edge for the ransom letters */
+  .torn {
+    clip-path: polygon(2% 4%, 26% 0%, 51% 5%, 78% 0%, 100% 6%, 97% 32%,
+                       100% 61%, 96% 89%, 72% 100%, 44% 95%, 19% 100%,
+                       0% 92%, 4% 63%, 0% 33%);
   }
 }
 

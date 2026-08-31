@@ -1,63 +1,127 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import Ransom from './Ransom'
+import Reader from './Reader'
 
 const API = import.meta.env.VITE_API_BASE || 'https://iain-book-recommender.onrender.com'
 
-// Verified to exist in the 826-book index — these never 404.
-const STARTERS = ['Dracula', 'The Secret History', 'The Hobbit', 'Jane Eyre', 'The Road']
+const STARTERS = ['Dracula', 'The Secret History', 'The Hobbit', 'Casino Royale', 'The Road']
 
-// Subject tags that carry no information for a reader.
-const DULL = new Set([
-  'fiction', 'fiction, general', 'general', 'large type books', 'accessible book',
-  'protected daisy', 'in library', 'internet archive wishlist', 'open library staff picks',
-  'long now manual for civilization', 'literature', 'english literature', 'reading',
-])
-
-const usefulSubjects = (subjects) => {
-  if (!Array.isArray(subjects)) return []
-  const seen = new Set()
-  const out = []
-  for (const s of subjects) {
-    const key = String(s).trim().toLowerCase()
-    if (!key || DULL.has(key) || seen.has(key)) continue
-    seen.add(key)
-    out.push(String(s).trim())
-    if (out.length === 3) break
-  }
-  return out
+// Spine colours, picked by genre so a shelf reads at a glance.
+const BANDS = [
+  { label: 'Horror',       color: '#8B1E2D', test: /horror|vampire|ghost|gothic|supernatural|monster/i },
+  { label: 'Crime',        color: '#16704A', test: /detective|mystery|crime|murder|thriller|suspense|noir|spies/i },
+  { label: 'Fantasy & SF', color: '#6C3F8F', test: /fantasy|science fiction|dragons|magic|wizard|space|dystop/i },
+  { label: 'Romance',      color: '#C43C6B', test: /romance|love stories|courtship|marriage/i },
+  { label: 'Adventure',    color: '#0E7C8C', test: /travel|adventure|voyage|sea stories|survival|expedition/i },
+  { label: 'History',      color: '#1E4C8A', test: /history|biography|autobiograph|war|memoir|politic/i },
+  { label: "Children's",   color: '#D29A12', test: /children|juvenile|picture book|schools/i },
+]
+const FICTION = { label: 'Fiction', color: '#E8873A' }
+const bandFor = (subjects) => {
+  const hay = (Array.isArray(subjects) ? subjects : []).join(' ')
+  return BANDS.find((b) => b.test.test(hay)) || FICTION
 }
 
-function Cover({ workId, title }) {
-  const [failed, setFailed] = useState(false)
+// Real cover if we resolved one offline (src/add_covers.py), else try the work
+// OLID, else fall through to a drawn cover.
+const coverUrls = (book) => {
+  const urls = []
+  if (book.cover_id) urls.push(`https://covers.openlibrary.org/b/id/${book.cover_id}-L.jpg`)
+  if (book.work_id) urls.push(`https://covers.openlibrary.org/b/olid/${book.work_id}-L.jpg?default=false`)
+  return urls
+}
 
-  if (failed || !workId) {
-    // Fallback: a blind-stamped spine, so a missing cover still looks deliberate.
-    return (
-      <div className="w-[74px] h-[112px] shrink-0 rounded-[2px] bg-cloth-light border border-cloth-deep flex items-center justify-center px-2 shadow-[inset_0_0_0_1px_rgba(201,162,39,.28)]">
-        <span className="font-display text-gilt/70 text-[11px] leading-tight text-center line-clamp-4">
-          {title}
-        </span>
-      </div>
-    )
+const titleSize = (t = '') =>
+  t.length > 60 ? 'text-[10px]' : t.length > 40 ? 'text-[12px]' : t.length > 24 ? 'text-[14px]' : 'text-[16px]'
+
+function Book3D({ book, index, onPick }) {
+  const band = bandFor(book.subjects)
+  const urls = coverUrls(book)
+  const [attempt, setAttempt] = useState(0)
+  const [tilt, setTilt] = useState({ x: 0, y: -18 })
+  const src = urls[attempt]
+
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    const px = (e.clientX - r.left) / r.width - 0.5
+    const py = (e.clientY - r.top) / r.height - 0.5
+    setTilt({ x: -py * 22, y: px * 34 })
   }
+
+  const pct = Math.round((book.similarity_score ?? 0) * 100)
+
   return (
-    <img
-      src={`https://covers.openlibrary.org/b/olid/${workId}-M.jpg?default=false`}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="w-[74px] h-[112px] shrink-0 rounded-[2px] object-cover bg-cloth-light shadow-md"
-    />
+    <div className="scene animate-shelve" style={{ animationDelay: `${index * 80}ms` }}>
+      <button
+        onClick={onPick}
+        onMouseMove={onMove}
+        onMouseLeave={() => setTilt({ x: 0, y: -18 })}
+        aria-label={`Find books near ${book.title}`}
+        className="group block w-full text-left"
+      >
+        <div
+          className="preserve-3d relative aspect-[2/3] w-full transition-transform duration-300 ease-out
+                     group-hover:scale-[1.04]"
+          style={{ transform: `rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)` }}
+        >
+          {/* page block, sitting behind the cover so it parallaxes in 3D */}
+          <div className="absolute inset-0 rounded-r-[3px] bg-[#EFE9D8]"
+               style={{ transform: 'translateZ(-14px) translateX(7px)',
+                        backgroundImage: 'repeating-linear-gradient(90deg,#EFE9D8 0 2px,#D8D0BA 2px 3px)' }} />
+
+          {/* the cover */}
+          <div className="absolute inset-0 overflow-hidden rounded-r-[3px] backface-hidden
+                          shadow-[0_16px_30px_rgba(26,26,24,.35)]"
+               style={{ backgroundColor: band.color }}>
+            {src ? (
+              <img
+                src={src}
+                alt=""
+                loading="lazy"
+                onError={() => setAttempt((a) => a + 1)}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex flex-col text-cream">
+                <div className="h-[22%] flex items-center justify-center">
+                  <span className="text-[8px] tracking-[.2em] uppercase opacity-80">{band.label}</span>
+                </div>
+                <div className="flex-1 bg-cut-paper text-ink flex items-center justify-center px-2 text-center">
+                  <span className={`font-ui font-medium leading-tight line-clamp-5 ${titleSize(book.title)}`}>
+                    {book.title}
+                  </span>
+                </div>
+                <div className="h-[22%] flex items-center justify-center">
+                  <span className="w-7 h-7 rounded-full bg-cut-paper flex items-center justify-center
+                                   font-ui font-bold text-[12px]" style={{ color: band.color }}>24</span>
+                </div>
+              </div>
+            )}
+            {/* spine shading + gloss */}
+            <div className="absolute inset-y-0 left-0 w-[13%]"
+                 style={{ background: 'linear-gradient(90deg,rgba(0,0,0,.42),rgba(0,0,0,.06) 60%,transparent)' }} />
+            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+                 style={{ background: 'linear-gradient(115deg,transparent 42%,rgba(255,255,255,.28) 50%,transparent 58%)' }} />
+          </div>
+        </div>
+      </button>
+
+      <p className="mt-3 font-type text-[11px] text-ink-soft leading-snug">
+        <span className="text-ink">{pct}% alike</span> · {band.label.toLowerCase()}
+      </p>
+      <p className="font-ui text-[13px] text-ink leading-snug line-clamp-2">{book.title}</p>
+    </div>
   )
 }
 
 export default function App() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
-  const [anchor, setAnchor] = useState('')       // the book the results are relative to
-  const [trail, setTrail] = useState([])         // books explored, in order
+  const [anchor, setAnchor] = useState('')
+  const [trail, setTrail] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [waking, setWaking] = useState(false)    // Render free tier cold start
+  const [waking, setWaking] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
 
   const [matches, setMatches] = useState([])
@@ -65,22 +129,20 @@ export default function App() {
   const [cursor, setCursor] = useState(-1)
 
   const boxRef = useRef(null)
-  const skipNextLookup = useRef(false)
+  const skipNext = useRef(false)
+  const resultsRef = useRef(null)
 
-  // Wake the API on load. Render spins free instances down after 15 minutes,
-  // so the first request otherwise stalls for ~50s and looks broken.
   useEffect(() => {
     let alive = true
-    const timer = setTimeout(() => { if (alive) setWaking(true) }, 1200)
-    fetch(`${API}/`)
-      .catch(() => {})
-      .finally(() => { if (alive) { clearTimeout(timer); setWaking(false) } })
-    return () => { alive = false; clearTimeout(timer) }
+    const t = setTimeout(() => { if (alive) setWaking(true) }, 1200)
+    fetch(`${API}/`).catch(() => {}).finally(() => {
+      if (alive) { clearTimeout(t); setWaking(false) }
+    })
+    return () => { alive = false; clearTimeout(t) }
   }, [])
 
-  // Live title lookup against /search, so you can only pick books that exist.
   useEffect(() => {
-    if (skipNextLookup.current) { skipNextLookup.current = false; return }
+    if (skipNext.current) { skipNext.current = false; return }
     const q = query.trim()
     const id = setTimeout(async () => {
       if (q.length < 2) { setMatches([]); setOpenList(false); return }
@@ -91,7 +153,7 @@ export default function App() {
         setMatches(d.results || [])
         setOpenList((d.results || []).length > 0)
         setCursor(-1)
-      } catch { /* lookup is a convenience; stay quiet if it fails */ }
+      } catch { /* autocomplete is a nicety */ }
     }, 220)
     return () => clearTimeout(id)
   }, [query])
@@ -104,49 +166,50 @@ export default function App() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [])
 
-  const findNeighbours = useCallback(async (rawTitle) => {
-    const title = (rawTitle || '').trim()
+  const findNeighbours = useCallback(async (raw) => {
+    const title = (raw || '').trim()
     if (!title) return
-
-    skipNextLookup.current = true
-    setQuery(title)
-    setOpenList(false)
-    setLoading(true)
-    setError('')
-    setHasSearched(true)
-
+    skipNext.current = true
+    setQuery(title); setOpenList(false); setLoading(true)
+    setError(''); setHasSearched(true)
     try {
       const r = await fetch(`${API}/recommend`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, top_n: 6 }),
       })
-
       if (r.status === 404) {
         setResults([])
-        setError(`"${title}" isn't in this shelf of 826 books. Start typing and pick a title from the list.`)
+        setError(`"${title}" isn't one of the 826. Start typing and pick from the list.`)
         return
       }
       if (!r.ok) throw new Error('bad status')
-
       const d = await r.json()
       setResults(d.recommendations || [])
       setAnchor(title)
-      setTrail((prev) => (prev[prev.length - 1] === title ? prev : [...prev, title]))
+      setTrail((p) => (p[p.length - 1] === title ? p : [...p, title]))
+      requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
     } catch {
       setResults([])
-      setError('Could not reach the library. It may still be waking up — try that again in a moment.')
+      setError('Could not reach the shelf. It may still be waking up — try again in a moment.')
     } finally {
       setLoading(false)
     }
   }, [])
 
   const onKeyDown = (e) => {
-    if (!openList || matches.length === 0) return
+    if (!openList || !matches.length) return
     if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => (c + 1) % matches.length) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => (c <= 0 ? matches.length - 1 : c - 1)) }
     else if (e.key === 'Enter' && cursor >= 0) { e.preventDefault(); findNeighbours(matches[cursor].title) }
-    else if (e.key === 'Escape') { setOpenList(false) }
+    else if (e.key === 'Escape') setOpenList(false)
+  }
+
+  const surprise = () => {
+    const pool = matches.length ? matches.map((m) => m.title) : STARTERS
+    findNeighbours(pool[Math.floor(Math.random() * pool.length)])
   }
 
   const reset = () => {
@@ -155,74 +218,64 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen text-card font-text selection:bg-gilt selection:text-cloth-deep">
-      <div className="h-1 w-full bg-gilt/70" />
-
-      <main className="max-w-3xl mx-auto px-6 pt-16 pb-24">
+    <div className="min-h-screen font-ui text-ink selection:bg-tape selection:text-cream">
+      <main className="max-w-5xl mx-auto px-5 pt-12 pb-28">
 
         <header className="text-center">
-          <p className="font-typed text-[11px] tracking-[.22em] text-gilt/80">24 · 2026</p>
-          <h1 className="font-display text-[2.6rem] sm:text-6xl leading-[1.05] mt-4 text-card">
-            Happy birthday, Iain
-          </h1>
-          <p className="mt-5 text-card/70 text-[17px] leading-relaxed max-w-[52ch] mx-auto">
-            You built a place to keep track of what you've read. This is the other half:
-            name a book you loved and it finds the six that sit closest to it, out of 826.
+          <div className="mx-auto w-[190px] sm:w-[230px] mb-2">
+            <Reader />
+          </div>
+
+          <Ransom text="Happy 24th Iain" />
+
+          <p className="mt-7 mx-auto max-w-[52ch] text-ink-soft text-[17px] leading-relaxed">
+            You built somewhere to log what you've read, so I built the opposite.
+            Name a book you loved and 826 of them shuffle to show you the six
+            that stand closest on the shelf.
           </p>
-          <p className="mt-3 font-typed text-[12px] text-card/40">Love, Lakshaa</p>
+          <p className="mt-2 font-type text-[13px] text-ink-soft/70">love, Lakshaa</p>
         </header>
 
-        <div ref={boxRef} className="relative mt-12">
+        <div ref={boxRef} className="relative mt-10 max-w-2xl mx-auto">
           <form onSubmit={(e) => { e.preventDefault(); findNeighbours(query) }}>
             <label htmlFor="title" className="sr-only">Book title</label>
             <div className="flex flex-col sm:flex-row gap-2">
               <input
-                id="title"
-                type="text"
-                value={query}
-                autoComplete="off"
-                role="combobox"
-                aria-expanded={openList}
-                aria-controls="matches"
-                aria-autocomplete="list"
+                id="title" type="text" value={query} autoComplete="off"
+                role="combobox" aria-expanded={openList} aria-controls="matches" aria-autocomplete="list"
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={onKeyDown}
                 onFocus={() => matches.length && setOpenList(true)}
-                placeholder="Start typing a title…"
-                className="flex-1 bg-card text-ink placeholder:text-ink-soft/60 font-text text-lg
-                           px-5 py-4 rounded-[3px] border border-card-edge
-                           shadow-[0_1px_0_rgba(255,255,255,.5)_inset,0_10px_24px_rgba(0,0,0,.35)]
-                           focus:outline-none focus:ring-2 focus:ring-gilt"
+                placeholder="Type a book you love…"
+                className="flex-1 bg-cut-paper text-ink placeholder:text-ink-soft/60 text-lg px-5 py-4
+                           rounded-[2px] border-[3px] border-ink shadow-[5px_5px_0_#1A1A18]
+                           focus:outline-none focus:border-tape"
               />
               <button
-                type="submit"
-                disabled={loading || !query.trim()}
-                className="font-display text-lg px-8 py-4 rounded-[3px] bg-gilt text-cloth-deep
-                           border border-gilt hover:bg-[#DCB63A] active:translate-y-px
-                           disabled:bg-cloth-light disabled:text-card/35 disabled:border-cloth-light
-                           disabled:cursor-not-allowed transition-colors"
+                type="submit" disabled={loading || !query.trim()}
+                className="bg-ink text-cream font-medium text-lg px-7 py-4 rounded-[2px]
+                           shadow-[5px_5px_0_#E8873A] hover:bg-tape hover:text-ink
+                           hover:shadow-[5px_5px_0_#1A1A18] active:translate-x-[2px] active:translate-y-[2px]
+                           active:shadow-[2px_2px_0_#1A1A18] transition-all
+                           disabled:bg-ink-soft/40 disabled:text-cream/60 disabled:shadow-none
+                           disabled:cursor-not-allowed"
               >
-                {loading ? 'Looking…' : 'Find its neighbours'}
+                {loading ? 'Shuffling…' : 'Pull it off the shelf'}
               </button>
             </div>
           </form>
 
           {openList && matches.length > 0 && (
-            <ul
-              id="matches"
-              role="listbox"
-              className="absolute z-20 left-0 right-0 mt-1 bg-card text-ink rounded-[3px]
-                         border border-card-edge shadow-2xl overflow-hidden"
-            >
+            <ul id="matches" role="listbox"
+                className="absolute z-30 left-0 right-0 mt-1 bg-cut-paper text-ink rounded-[2px]
+                           border-[3px] border-ink shadow-[5px_5px_0_#1A1A18] overflow-hidden">
               {matches.map((m, i) => (
                 <li key={m.work_id || i} role="option" aria-selected={i === cursor}>
-                  <button
-                    type="button"
+                  <button type="button"
                     onMouseEnter={() => setCursor(i)}
                     onClick={() => findNeighbours(m.title)}
-                    className={`w-full text-left px-5 py-3 font-text text-[15px] border-b border-card-edge/60
-                                last:border-0 ${i === cursor ? 'bg-gilt/25' : 'hover:bg-gilt/15'}`}
-                  >
+                    className={`w-full text-left px-5 py-3 text-[15px] border-b border-ink/15 last:border-0
+                                ${i === cursor ? 'bg-tape text-ink' : 'hover:bg-ink/5'}`}>
                     {m.title}
                   </button>
                 </li>
@@ -230,133 +283,76 @@ export default function App() {
             </ul>
           )}
 
-          {!hasSearched && (
-            <div className="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-2 text-card/55 text-[15px]">
-              <span className="font-typed text-[11px] tracking-[.16em] text-card/35">or begin with</span>
-              {STARTERS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => findNeighbours(t)}
-                  className="font-text italic underline decoration-gilt/40 underline-offset-4
-                             hover:text-gilt hover:decoration-gilt transition-colors"
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[14px]">
+            {!hasSearched && STARTERS.map((t) => (
+              <button key={t} onClick={() => findNeighbours(t)}
+                className="px-3 py-1 border-2 border-ink rounded-[2px] bg-cream
+                           hover:bg-ink hover:text-cream transition-colors">
+                {t}
+              </button>
+            ))}
+            <button onClick={surprise}
+              className="px-3 py-1 border-2 border-ink rounded-[2px] bg-cut-yellow
+                         hover:bg-ink hover:text-cream transition-colors">
+              Surprise me
+            </button>
+          </div>
+
+          {waking && !hasSearched && (
+            <p className="mt-5 text-center font-type text-[12px] text-ink-soft/70">
+              turning the lights on — the shelf sleeps when nobody's reading
+            </p>
           )}
         </div>
 
-        {waking && !hasSearched && (
-          <p className="mt-8 text-center font-typed text-[12px] text-card/40">
-            Unlocking the library — the server sleeps when nobody's reading.
-          </p>
-        )}
-
         {trail.length > 1 && (
-          <nav className="mt-12 flex flex-wrap items-center gap-2 font-typed text-[12px] text-card/45">
+          <nav className="mt-12 flex flex-wrap items-center justify-center gap-2 text-[12px]">
             {trail.map((t, i) => (
-              <span key={`${t}-${i}`} className="flex items-center gap-2">
-                {i > 0 && <span className="text-gilt/50">/</span>}
-                <button
-                  onClick={() => findNeighbours(t)}
-                  className={`hover:text-gilt transition-colors ${t === anchor ? 'text-gilt' : ''}`}
-                >
-                  {t}
-                </button>
-              </span>
+              <button key={`${t}-${i}`} onClick={() => findNeighbours(t)}
+                className={`px-2.5 py-1 border-2 border-ink rounded-[2px] transition-colors
+                  ${t === anchor ? 'bg-ink text-cream' : 'bg-cream hover:bg-cut-yellow'}`}>
+                {t}
+              </button>
             ))}
-            <button onClick={reset} className="ml-2 text-card/30 hover:text-card/70 transition-colors">
-              clear
-            </button>
+            <button onClick={reset} className="ml-1 font-type text-ink-soft hover:text-ink">start over</button>
           </nav>
         )}
 
         {error && (
-          <p className="mt-12 border-l-2 border-stamp bg-cloth-light/40 px-5 py-4 text-card/80 text-[15px] leading-relaxed">
+          <p className="mt-12 max-w-2xl mx-auto border-[3px] border-ink bg-cut-yellow px-5 py-4
+                        shadow-[5px_5px_0_#1A1A18] text-[15px]">
             {error}
           </p>
         )}
 
         {loading && (
-          <p className="mt-16 text-center font-typed text-[12px] text-card/40">
-            Reading the shelf…
+          <p className="mt-20 text-center font-type text-[13px] text-ink-soft tracking-wide">
+            reading the shelf…
           </p>
         )}
 
         {!loading && results.length > 0 && (
-          <section className="mt-14">
-            <h2 className="font-display text-2xl text-card/90">
-              Closest to <em className="not-italic text-gilt">{anchor}</em>
-            </h2>
-            <p className="mt-1 mb-7 text-card/45 text-[15px]">
-              Pick any one to keep walking down the shelf.
+          <section ref={resultsRef} className="mt-16 scroll-mt-6">
+            <p className="text-center font-type text-[14px] text-ink-soft">
+              standing next to <span className="text-ink">{anchor}</span>
             </p>
 
-            <ol className="space-y-3">
-              {results.map((book, i) => {
-                const pct = Math.round((book.similarity_score ?? 0) * 100)
-                const tags = usefulSubjects(book.subjects)
-                return (
-                  <li
-                    key={book.work_id || i}
-                    style={{ animationDelay: `${i * 55}ms` }}
-                    className="animate-deal bg-card text-ink rounded-[3px] border border-card-edge
-                               shadow-[0_8px_20px_rgba(0,0,0,.3)] p-5 flex gap-5"
-                  >
-                    <Cover key={book.work_id} workId={book.work_id} title={book.title} />
+            <div className="mt-9 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-10">
+              {results.map((book, i) => (
+                <Book3D key={book.work_id || i} book={book} index={i}
+                        onPick={() => findNeighbours(book.title)} />
+              ))}
+            </div>
 
-                    <div className="min-w-0 flex-1 flex flex-col">
-                      <h3 className="font-display text-[21px] leading-snug text-ink">
-                        {book.title}
-                      </h3>
-
-                      {tags.length > 0 && (
-                        <p className="mt-1.5 font-typed text-[11px] text-ink-soft leading-relaxed">
-                          {tags.join('  ·  ')}
-                        </p>
-                      )}
-
-                      <div className="mt-auto pt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-                        <div className="flex-1 min-w-[110px] max-w-[130px]">
-                          <div className="h-[3px] w-full bg-ink/10 rounded-full overflow-hidden">
-                            <div className="h-full bg-stamp rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                          <span className="font-typed text-[10px] text-ink-soft">{pct}% alike</span>
-                        </div>
-
-                        <button
-                          onClick={() => findNeighbours(book.title)}
-                          className="font-text italic text-[15px] text-stamp underline
-                                     decoration-stamp/30 underline-offset-4 hover:decoration-stamp"
-                        >
-                          Books near this one
-                        </button>
-
-                        {book.work_id && (
-                          <a
-                            href={`https://openlibrary.org/works/${book.work_id}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="font-typed text-[11px] text-ink-soft hover:text-ink underline
-                                       decoration-ink-soft/30 underline-offset-4"
-                          >
-                            details
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </li>
-                )
-              })}
-            </ol>
+            <div className="mt-4 h-3 bg-ink rounded-[1px] shadow-[0_8px_16px_rgba(26,26,24,.28)]" />
+            <p className="mt-6 text-center font-type text-[13px] text-ink-soft">
+              tap any cover to keep walking down the shelf
+            </p>
           </section>
         )}
 
         {!loading && hasSearched && !error && results.length === 0 && (
-          <p className="mt-16 text-center text-card/50 text-[15px]">
-            Nothing sits close to that one. Try another title.
-          </p>
+          <p className="mt-20 text-center text-ink-soft">Nothing stands near that one. Try another.</p>
         )}
       </main>
     </div>
