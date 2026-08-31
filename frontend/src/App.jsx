@@ -60,7 +60,7 @@ export default function BirthdayRecommender() {
         {/* Main Title */}
         <div className="text-center space-y-3 max-w-2xl">
           <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
-            Happy 24th, Iain 📚
+            Happy 24th Birthday Iain 📚
           </h1>
           <p className="text-slate-400 text-base sm:text-lg leading-relaxed">
             A bespoke book discovery engine trained on high-dimensional semantic embeddings. Enter any title to map the closest literary coordinates.
