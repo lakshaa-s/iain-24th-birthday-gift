@@ -1,236 +1,364 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react'
 
-const SUGGESTIONS = ['Dracula', 'The Great Gatsby', 'Frankenstein', '1984', 'Pride and Prejudice'];
+const API = import.meta.env.VITE_API_BASE || 'https://iain-book-recommender.onrender.com'
 
-// Helper to determine greeting
-const getGreeting = () => {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'A crisp morning to you,';
-  if (hour < 18) return 'A productive afternoon to you,';
-  return 'A stellar evening to you,';
-};
+// Verified to exist in the 826-book index — these never 404.
+const STARTERS = ['Dracula', 'The Secret History', 'The Hobbit', 'Jane Eyre', 'The Road']
 
-export default function BirthdayRecommender() {
-  const [query, setQuery] = useState('');
-  const [recommendations, setRecommendations] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [hasSearched, setHasSearched] = useState(false);
-  const [greeting] = useState(getGreeting());
+// Subject tags that carry no information for a reader.
+const DULL = new Set([
+  'fiction', 'fiction, general', 'general', 'large type books', 'accessible book',
+  'protected daisy', 'in library', 'internet archive wishlist', 'open library staff picks',
+  'long now manual for civilization', 'literature', 'english literature', 'reading',
+])
 
-  const fetchRecommendations = async (searchTitle, directFromCard = false) => {
-    const titleToSearch = (searchTitle || query).trim();
-    if (!titleToSearch) return;
+const usefulSubjects = (subjects) => {
+  if (!Array.isArray(subjects)) return []
+  const seen = new Set()
+  const out = []
+  for (const s of subjects) {
+    const key = String(s).trim().toLowerCase()
+    if (!key || DULL.has(key) || seen.has(key)) continue
+    seen.add(key)
+    out.push(String(s).trim())
+    if (out.length === 3) break
+  }
+  return out
+}
 
-    if (!directFromCard) {
-      setQuery(titleToSearch); // Update the input field if it's not a direct card exploration
-    } else {
-      setQuery(titleToSearch);
+function Cover({ workId, title }) {
+  const [failed, setFailed] = useState(false)
+
+  if (failed || !workId) {
+    // Fallback: a blind-stamped spine, so a missing cover still looks deliberate.
+    return (
+      <div className="w-[74px] h-[112px] shrink-0 rounded-[2px] bg-cloth-light border border-cloth-deep flex items-center justify-center px-2 shadow-[inset_0_0_0_1px_rgba(201,162,39,.28)]">
+        <span className="font-display text-gilt/70 text-[11px] leading-tight text-center line-clamp-4">
+          {title}
+        </span>
+      </div>
+    )
+  }
+  return (
+    <img
+      src={`https://covers.openlibrary.org/b/olid/${workId}-M.jpg?default=false`}
+      alt=""
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="w-[74px] h-[112px] shrink-0 rounded-[2px] object-cover bg-cloth-light shadow-md"
+    />
+  )
+}
+
+export default function App() {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [anchor, setAnchor] = useState('')       // the book the results are relative to
+  const [trail, setTrail] = useState([])         // books explored, in order
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [waking, setWaking] = useState(false)    // Render free tier cold start
+  const [hasSearched, setHasSearched] = useState(false)
+
+  const [matches, setMatches] = useState([])
+  const [openList, setOpenList] = useState(false)
+  const [cursor, setCursor] = useState(-1)
+
+  const boxRef = useRef(null)
+  const skipNextLookup = useRef(false)
+
+  // Wake the API on load. Render spins free instances down after 15 minutes,
+  // so the first request otherwise stalls for ~50s and looks broken.
+  useEffect(() => {
+    let alive = true
+    const timer = setTimeout(() => { if (alive) setWaking(true) }, 1200)
+    fetch(`${API}/`)
+      .catch(() => {})
+      .finally(() => { if (alive) { clearTimeout(timer); setWaking(false) } })
+    return () => { alive = false; clearTimeout(timer) }
+  }, [])
+
+  // Live title lookup against /search, so you can only pick books that exist.
+  useEffect(() => {
+    if (skipNextLookup.current) { skipNextLookup.current = false; return }
+    const q = query.trim()
+    const id = setTimeout(async () => {
+      if (q.length < 2) { setMatches([]); setOpenList(false); return }
+      try {
+        const r = await fetch(`${API}/search?q=${encodeURIComponent(q)}&limit=6`)
+        if (!r.ok) return
+        const d = await r.json()
+        setMatches(d.results || [])
+        setOpenList((d.results || []).length > 0)
+        setCursor(-1)
+      } catch { /* lookup is a convenience; stay quiet if it fails */ }
+    }, 220)
+    return () => clearTimeout(id)
+  }, [query])
+
+  useEffect(() => {
+    const onDown = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpenList(false)
     }
-    
-    setLoading(true);
-    setError('');
-    setHasSearched(true);
-    
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [])
+
+  const findNeighbours = useCallback(async (rawTitle) => {
+    const title = (rawTitle || '').trim()
+    if (!title) return
+
+    skipNextLookup.current = true
+    setQuery(title)
+    setOpenList(false)
+    setLoading(true)
+    setError('')
+    setHasSearched(true)
+
     try {
-      const response = await fetch('https://iain-book-recommender.onrender.com/recommend', {
+      const r = await fetch(`${API}/recommend`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: titleToSearch, top_n: 6 })
-      });
-      
-      if (!response.ok) {
-        throw new Error('Our neural archivist could not find that specific literary artifact. Try another classic or check spelling.');
+        body: JSON.stringify({ title, top_n: 6 }),
+      })
+
+      if (r.status === 404) {
+        setResults([])
+        setError(`"${title}" isn't in this shelf of 826 books. Start typing and pick a title from the list.`)
+        return
       }
-      
-      const data = await response.json();
-      setRecommendations(data.recommendations || []);
-    } catch (err) {
-      setError(err.message);
-      setRecommendations([]);
+      if (!r.ok) throw new Error('bad status')
+
+      const d = await r.json()
+      setResults(d.recommendations || [])
+      setAnchor(title)
+      setTrail((prev) => (prev[prev.length - 1] === title ? prev : [...prev, title]))
+    } catch {
+      setResults([])
+      setError('Could not reach the library. It may still be waking up — try that again in a moment.')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
+  }, [])
 
-  const handleChipClick = (title) => {
-    fetchRecommendations(title);
-  };
+  const onKeyDown = (e) => {
+    if (!openList || matches.length === 0) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => (c + 1) % matches.length) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => (c <= 0 ? matches.length - 1 : c - 1)) }
+    else if (e.key === 'Enter' && cursor >= 0) { e.preventDefault(); findNeighbours(matches[cursor].title) }
+    else if (e.key === 'Escape') { setOpenList(false) }
+  }
 
-  const handleCardExplore = (title) => {
-    fetchRecommendations(title, true);
-  };
+  const reset = () => {
+    setQuery(''); setResults([]); setTrail([]); setAnchor('')
+    setError(''); setHasSearched(false); setMatches([]); setOpenList(false)
+  }
 
   return (
-    <div className="min-h-screen bg-[#070b16] text-slate-100 relative overflow-hidden font-sans selection:bg-cyan-500 selection:text-black">
-      {/* Dynamic Background Effects */}
-      <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-indigo-900/15 rounded-full blur-[150px] pointer-events-none" />
-      <div className="absolute bottom-[10%] right-[5%] w-[500px] h-[500px] bg-fuchsia-900/10 rounded-full blur-[140px] pointer-events-none" />
-      <div className="absolute top-[40%] right-[40%] w-[400px] h-[400px] bg-cyan-900/10 rounded-full blur-[120px] pointer-events-none" />
+    <div className="min-h-screen text-card font-text selection:bg-gilt selection:text-cloth-deep">
+      <div className="h-1 w-full bg-gilt/70" />
 
-      {/* Retro-futuristic static grain overlay for texture */}
-      <div className="absolute inset-0 bg-[url('https://transparenttextures.com/patterns/black-linen.png')] opacity-[0.12] pointer-events-none" />
+      <main className="max-w-3xl mx-auto px-6 pt-16 pb-24">
 
-      <main className="relative max-w-4xl mx-auto px-6 py-20 flex flex-col items-center">
-        {/* Playful Header Container */}
-        <div className="text-center space-y-3 max-w-2xl flex flex-col items-center">
-          <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full bg-cyan-950/70 border border-cyan-500/30 text-cyan-200 text-xs font-semibold tracking-wide mb-8 backdrop-blur-md shadow-inner animate-fade-in-down">
-            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
-            Iain's AI Archivist • Codename: LUNA v2.4
-          </div>
-          <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight bg-gradient-to-r from-cyan-300 via-white to-fuchsia-300 bg-clip-text text-transparent transform hover:scale-[1.03] transition-transform duration-300 cursor-pointer">
-            Happy 24th, Iain 🚀📚
+        <header className="text-center">
+          <p className="font-typed text-[11px] tracking-[.22em] text-gilt/80">24 · 2026</p>
+          <h1 className="font-display text-[2.6rem] sm:text-6xl leading-[1.05] mt-4 text-card">
+            Happy birthday, Iain
           </h1>
-          <p className="text-slate-400 text-base sm:text-lg leading-relaxed pt-2">
-            {greeting} Iain! I am LUNA, your cybernetic librarian. Submit a title and I'll generate semantic vectors to uncover similar literary treasures.
+          <p className="mt-5 text-card/70 text-[17px] leading-relaxed max-w-[52ch] mx-auto">
+            You built a place to keep track of what you've read. This is the other half:
+            name a book you loved and it finds the six that sit closest to it, out of 826.
           </p>
-        </div>
+          <p className="mt-3 font-typed text-[12px] text-card/40">Love, Lakshaa</p>
+        </header>
 
-        {/* Interactive Search Box */}
-        <div className="w-full max-w-2xl mt-10">
-          <form 
-            onSubmit={(e) => { e.preventDefault(); fetchRecommendations(); }}
-            className="relative flex items-center group"
-          >
-            {/* The Outer Glow Ring - Animated on Focus */}
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-fuchsia-600 rounded-2xl blur opacity-30 group-focus-within:opacity-80 transition duration-300" />
-            <div className="relative w-full flex items-center bg-[#0d1425]/90 border border-slate-700/80 rounded-2xl p-2.5 backdrop-blur-2xl shadow-2xl focus-within:border-cyan-500/80 transition-all">
-              <span className="pl-4 text-cyan-400 group-focus-within:animate-pulse">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </span>
+        <div ref={boxRef} className="relative mt-12">
+          <form onSubmit={(e) => { e.preventDefault(); findNeighbours(query) }}>
+            <label htmlFor="title" className="sr-only">Book title</label>
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
+                id="title"
                 type="text"
                 value={query}
+                autoComplete="off"
+                role="combobox"
+                aria-expanded={openList}
+                aria-controls="matches"
+                aria-autocomplete="list"
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search a favored work (e.g. Frankenstein)..."
-                className="w-full bg-transparent py-3.5 px-4 text-slate-100 placeholder:text-slate-500 focus:outline-none text-base font-medium tracking-tight"
+                onKeyDown={onKeyDown}
+                onFocus={() => matches.length && setOpenList(true)}
+                placeholder="Start typing a title…"
+                className="flex-1 bg-card text-ink placeholder:text-ink-soft/60 font-text text-lg
+                           px-5 py-4 rounded-[3px] border border-card-edge
+                           shadow-[0_1px_0_rgba(255,255,255,.5)_inset,0_10px_24px_rgba(0,0,0,.35)]
+                           focus:outline-none focus:ring-2 focus:ring-gilt"
               />
               <button
                 type="submit"
                 disabled={loading || !query.trim()}
-                className="bg-gradient-to-r from-cyan-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-500 text-black font-semibold px-8 py-3.5 rounded-xl transition-all shadow-md active:scale-95 text-sm whitespace-nowrap cursor-pointer disabled:cursor-not-allowed group-focus-within:scale-[1.02]"
+                className="font-display text-lg px-8 py-4 rounded-[3px] bg-gilt text-cloth-deep
+                           border border-gilt hover:bg-[#DCB63A] active:translate-y-px
+                           disabled:bg-cloth-light disabled:text-card/35 disabled:border-cloth-light
+                           disabled:cursor-not-allowed transition-colors"
               >
-                {loading ? (
-                  <span className="flex items-center gap-2">
-                    <span className="w-4 h-4 border-2 border-black/20 border-t-black rounded-full animate-spin" />
-                    Engaging Archivist...
-                  </span>
-                ) : 'Execute Exploration'}
+                {loading ? 'Looking…' : 'Find its neighbours'}
               </button>
             </div>
           </form>
 
-          {/* Holographic Chip Suggestions */}
-          <div className="flex flex-wrap items-center justify-center gap-2 mt-5 text-xs text-slate-400 group">
-            <span className="text-slate-500 group-hover:animate-pulse">Discoverable Artifacts:</span>
-            {SUGGESTIONS.map((title) => (
-              <button
-                key={title}
-                onClick={() => handleChipClick(title)}
-                className="px-3 py-1 rounded-lg bg-cyan-950/40 hover:bg-cyan-900/80 hover:text-cyan-200 border border-cyan-800/40 hover:border-cyan-500/50 transition-colors cursor-pointer backdrop-blur-md"
-              >
-                {title}
-              </button>
-            ))}
-          </div>
+          {openList && matches.length > 0 && (
+            <ul
+              id="matches"
+              role="listbox"
+              className="absolute z-20 left-0 right-0 mt-1 bg-card text-ink rounded-[3px]
+                         border border-card-edge shadow-2xl overflow-hidden"
+            >
+              {matches.map((m, i) => (
+                <li key={m.work_id || i} role="option" aria-selected={i === cursor}>
+                  <button
+                    type="button"
+                    onMouseEnter={() => setCursor(i)}
+                    onClick={() => findNeighbours(m.title)}
+                    className={`w-full text-left px-5 py-3 font-text text-[15px] border-b border-card-edge/60
+                                last:border-0 ${i === cursor ? 'bg-gilt/25' : 'hover:bg-gilt/15'}`}
+                  >
+                    {m.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {!hasSearched && (
+            <div className="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-2 text-card/55 text-[15px]">
+              <span className="font-typed text-[11px] tracking-[.16em] text-card/35">or begin with</span>
+              {STARTERS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => findNeighbours(t)}
+                  className="font-text italic underline decoration-gilt/40 underline-offset-4
+                             hover:text-gilt hover:decoration-gilt transition-colors"
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Dynamic Status Display (Error or Loading) */}
-        {(error || loading) && (
-          <div className="mt-12 w-full max-w-2xl">
-            {error && (
-              <div className="w-full p-4.5 rounded-2xl bg-red-950/40 border border-red-500/40 text-red-300 text-sm font-medium tracking-tight text-center backdrop-blur-md shadow-inner animate-pulse-fast">
-                ⚠️ {error}
-              
-              </div>
-            )}
-            
-            {loading && (
-              <div className="w-full text-center text-slate-500 text-sm pt-4 flex items-center justify-center gap-2.5">
-                  <span className="relative flex h-3 w-3">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
-                  </span>
-                 Connecting to vector space... mapping semantic neighbors...
-              </div>
-            )}
-          </div>
+        {waking && !hasSearched && (
+          <p className="mt-8 text-center font-typed text-[12px] text-card/40">
+            Unlocking the library — the server sleeps when nobody's reading.
+          </p>
         )}
 
-        {/* Staggered Recommendations Grid */}
-        {!loading && recommendations.length > 0 && (
-          <div className="w-full mt-12 space-y-4">
-            <div className="flex items-center justify-between text-xs tracking-wider uppercase text-cyan-400 font-bold px-1 animate-fade-in-down">
-              <span>Artifact Coordinates Discovered</span>
-              <span>Vector Similarity (Nearest Neighbor)</span>
-            </div>
+        {trail.length > 1 && (
+          <nav className="mt-12 flex flex-wrap items-center gap-2 font-typed text-[12px] text-card/45">
+            {trail.map((t, i) => (
+              <span key={`${t}-${i}`} className="flex items-center gap-2">
+                {i > 0 && <span className="text-gilt/50">/</span>}
+                <button
+                  onClick={() => findNeighbours(t)}
+                  className={`hover:text-gilt transition-colors ${t === anchor ? 'text-gilt' : ''}`}
+                >
+                  {t}
+                </button>
+              </span>
+            ))}
+            <button onClick={reset} className="ml-2 text-card/30 hover:text-card/70 transition-colors">
+              clear
+            </button>
+          </nav>
+        )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 group-hover:animate-subtle-glitch">
-              {recommendations.map((book, idx) => {
-                const scorePercent = (book.similarity_score * 100).toFixed(1);
-                // Create custom circular score display color based on score
-                const scoreColor = scorePercent > 90 ? 'cyan' : scorePercent > 80 ? 'fuchsia' : 'slate';
-                
+        {error && (
+          <p className="mt-12 border-l-2 border-stamp bg-cloth-light/40 px-5 py-4 text-card/80 text-[15px] leading-relaxed">
+            {error}
+          </p>
+        )}
+
+        {loading && (
+          <p className="mt-16 text-center font-typed text-[12px] text-card/40">
+            Reading the shelf…
+          </p>
+        )}
+
+        {!loading && results.length > 0 && (
+          <section className="mt-14">
+            <h2 className="font-display text-2xl text-card/90">
+              Closest to <em className="not-italic text-gilt">{anchor}</em>
+            </h2>
+            <p className="mt-1 mb-7 text-card/45 text-[15px]">
+              Pick any one to keep walking down the shelf.
+            </p>
+
+            <ol className="space-y-3">
+              {results.map((book, i) => {
+                const pct = Math.round((book.similarity_score ?? 0) * 100)
+                const tags = usefulSubjects(book.subjects)
                 return (
-                  <div
-                    key={idx}
-                    style={{ animationDelay: `${idx * 0.1}s` }}
-                    className="group relative p-6 rounded-2xl bg-[#0f1a2d]/80 hover:bg-[#15203a] border border-cyan-900/60 hover:border-cyan-500/50 backdrop-blur-3xl transition-all duration-300 shadow-xl hover:shadow-cyan-500/10 flex flex-col justify-between animate-fade-in-up transform hover:scale-[1.01] hover:translate-y-[-2px] cursor-default"
+                  <li
+                    key={book.work_id || i}
+                    style={{ animationDelay: `${i * 55}ms` }}
+                    className="animate-deal bg-card text-ink rounded-[3px] border border-card-edge
+                               shadow-[0_8px_20px_rgba(0,0,0,.3)] p-5 flex gap-5"
                   >
-                    <div>
-                      <div className="flex items-start justify-between gap-3">
-                        <h3 className="text-lg font-extrabold text-slate-100 group-hover:text-cyan-200 transition-colors line-clamp-2 leading-tight">
-                          {book.title}
-                        </h3>
-                        {/* Circular similarity score indicator */}
-                        <div className={`shrink-0 flex items-center justify-center w-14 h-14 rounded-full bg-slate-900 border-4 border-${scoreColor}-500/30 group-hover:border-${scoreColor}-500/80 transition-colors`}>
-                           <span className={`text-${scoreColor}-300 text-sm font-bold font-mono tracking-tighter`}>{scorePercent}%</span>
-                        </div>
-                      </div>
+                    <Cover key={book.work_id} workId={book.work_id} title={book.title} />
 
-                      {book.subjects && book.subjects.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mt-3 pt-1">
-                          {book.subjects.slice(0, 3).map((subject, sIdx) => (
-                            <span
-                              key={sIdx}
-                              className="text-[11px] font-medium bg-slate-800/80 text-slate-400 px-3 py-1 rounded-md border border-slate-700/60"
-                            >
-                              {subject}
-                            </span>
-                          ))}
-                        </div>
+                    <div className="min-w-0 flex-1 flex flex-col">
+                      <h3 className="font-display text-[21px] leading-snug text-ink">
+                        {book.title}
+                      </h3>
+
+                      {tags.length > 0 && (
+                        <p className="mt-1.5 font-typed text-[11px] text-ink-soft leading-relaxed">
+                          {tags.join('  ·  ')}
+                        </p>
                       )}
-                    </div>
 
-                    <div className="mt-6 pt-4 border-t border-cyan-900/70 flex items-center justify-between text-xs text-slate-500 group">
-                      <span className="font-mono text-cyan-800 group-hover:text-cyan-700">COORD: {book.work_id}</span>
-                      {/* Discovery Loop Action! */}
-                      <button 
-                        onClick={() => handleCardExplore(book.title)}
-                        className="text-fuchsia-400 group-hover:text-fuchsia-300 group-hover:translate-x-0.5 transition-all inline-flex items-center gap-1.5 font-semibold group-hover:scale-105"
-                      >
-                         Map Artifact
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                        </svg>
-                      </button>
+                      <div className="mt-auto pt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+                        <div className="flex-1 min-w-[110px] max-w-[130px]">
+                          <div className="h-[3px] w-full bg-ink/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-stamp rounded-full" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="font-typed text-[10px] text-ink-soft">{pct}% alike</span>
+                        </div>
+
+                        <button
+                          onClick={() => findNeighbours(book.title)}
+                          className="font-text italic text-[15px] text-stamp underline
+                                     decoration-stamp/30 underline-offset-4 hover:decoration-stamp"
+                        >
+                          Books near this one
+                        </button>
+
+                        {book.work_id && (
+                          <a
+                            href={`https://openlibrary.org/works/${book.work_id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-typed text-[11px] text-ink-soft hover:text-ink underline
+                                       decoration-ink-soft/30 underline-offset-4"
+                          >
+                            details
+                          </a>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
+                  </li>
+                )
               })}
-            </div>
-          </div>
+            </ol>
+          </section>
         )}
 
-        {/* Refined Empty State */}
-        {!loading && hasSearched && recommendations.length === 0 && !error && (
-          <div className="mt-16 text-center text-slate-500 text-sm max-w-lg p-10 rounded-2xl bg-slate-900/40 border border-slate-800 border-dashed animate-fade-in-up">
-            Our archivists successfully navigated the semantic vector space, but found no matches near these coordinates. The specified title might reside beyond our current indexing matrix. Try mapping an established classic artifact.
-          </div>
+        {!loading && hasSearched && !error && results.length === 0 && (
+          <p className="mt-16 text-center text-card/50 text-[15px]">
+            Nothing sits close to that one. Try another title.
+          </p>
         )}
       </main>
     </div>
-  );
+  )
 }
