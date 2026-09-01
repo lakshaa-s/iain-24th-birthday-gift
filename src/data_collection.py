@@ -1,69 +1,134 @@
-import requests
+"""
+Collect books from Open Library.
+
+Three changes from the original, which capped out at 826 books:
+
+  1. Paginates. The old version asked each subject for its first 100 works and
+     stopped, so 10 subjects x 100 = 1000 works maximum. The endpoint accepts
+     an offset, so now we keep asking until we have what we want.
+  2. Resolves author names. The old version stored author keys ("OL27695A")
+     and never looked them up, so no book in the index knew who wrote it.
+     Names are cached on disk, so each author is fetched once ever.
+  3. Resumable. Progress is flushed as it goes and already-collected works are
+     skipped on a rerun, so a dropped connection costs you nothing.
+
+This uses Open Library's public JSON API — the same one the old script used.
+No scraping, nothing that needs a key, nothing against anyone's terms.
+
+    python src/data_collection.py --smoke              # ~2 min, sanity check
+    python src/data_collection.py --per-subject 800    # the real run
+
+Be aware the real run takes a few hours: Open Library asks for one request at
+a time and we sleep between them. Leave it going overnight.
+"""
+
+import argparse
 import json
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_FILE = PROJECT_ROOT / "data" / "raw" / "books.jsonl"
+AUTHOR_CACHE = PROJECT_ROOT / "data" / "raw" / "authors.json"
 
-BASE_URL = "https://openlibrary.org"
-OUTPUT_FILE = Path("data/raw/books.jsonl")
+BASE = "https://openlibrary.org"
+HEADERS = {"User-Agent": "iain-birthday-gift/1.0 (personal project)"}
+PAUSE = 0.12
+PAGE = 200  # works per request
 
 SUBJECTS = [
-    "fiction",
-    "fantasy",
-    "romance",
-    "mystery_and_detective_stories",
-    "science_fiction",
-    "horror",
-    "thriller",
-    "historical_fiction",
-    "young_adult_fiction",
-    "literary_fiction",
+    # the original ten
+    "fiction", "fantasy", "romance", "mystery_and_detective_stories",
+    "science_fiction", "horror", "thriller", "historical_fiction",
+    "young_adult_fiction", "literary_fiction",
+    # breadth: genre
+    "adventure", "crime", "detective_and_mystery_stories", "dystopia",
+    "ghost_stories", "gothic_fiction", "humor", "magic_realism",
+    "short_stories", "spy_stories", "war_stories", "western_stories",
+    "graphic_novels", "poetry", "drama", "classic_literature",
+    # breadth: non-fiction, so it isn't all novels
+    "biography", "history", "science", "philosophy", "psychology",
+    "travel", "nature", "art", "music", "cooking", "essays", "memoir",
+    # breadth: place and period, which pull different shelves
+    "english_literature", "american_literature", "irish_literature",
+    "japanese_literature", "russian_literature", "african_american_fiction",
 ]
 
 
-def get_subject_works(subject, limit=100):
-    """Get works belonging to an Open Library subject."""
-
-    url = f"{BASE_URL}/subjects/{subject}.json"
-
-    params = {
-        "limit": limit
-    }
-
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-
-    return response.json().get("works", [])
+def get_json(url, params=None):
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers=HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except (urllib.error.URLError, urllib.error.HTTPError,
+            TimeoutError, json.JSONDecodeError):
+        return None
 
 
-def get_work(work_id):
-    """Retrieve detailed information about an Open Library work."""
+def collect_work_ids(subject, target):
+    """Page through a subject until we have `target` work ids."""
+    ids, offset = [], 0
+    while len(ids) < target:
+        data = get_json(f"{BASE}/subjects/{subject}.json",
+                        {"limit": PAGE, "offset": offset})
+        time.sleep(PAUSE)
+        if not data:
+            break
 
-    url = f"{BASE_URL}/works/{work_id}.json"
+        works = data.get("works") or []
+        if not works:
+            break  # ran off the end of this subject
 
-    response = requests.get(url)
-    response.raise_for_status()
+        for w in works:
+            key = (w.get("key") or "").replace("/works/", "")
+            if key:
+                ids.append(key)
 
-    return response.json()
+        offset += PAGE
+    return ids[:target]
 
 
-def extract_work_data(work):
-    """Extract the fields needed by our recommender."""
+def load_author_cache():
+    if AUTHOR_CACHE.exists():
+        try:
+            return json.loads(AUTHOR_CACHE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    return {}
 
-    work_id = work.get("key", "").replace("/works/", "")
 
-    authors = []
+def author_names(keys, cache):
+    """Resolve author keys to names, fetching only what we've never seen."""
+    names = []
+    for key in keys:
+        if key not in cache:
+            data = get_json(f"{BASE}/authors/{key}.json")
+            time.sleep(PAUSE)
+            cache[key] = (data or {}).get("name") or None
+        if cache[key]:
+            names.append(cache[key])
+    return names
 
-    for author in work.get("authors", []):
-        author_key = author.get("author", {}).get("key")
 
-        if author_key:
-            authors.append(author_key.replace("/authors/", ""))
+def extract(work, cache):
+    work_id = (work.get("key") or "").replace("/works/", "")
+
+    author_keys = []
+    for a in work.get("authors", []):
+        k = (a.get("author") or {}).get("key")
+        if k:
+            author_keys.append(k.replace("/authors/", ""))
 
     description = work.get("description")
-
     if isinstance(description, dict):
         description = description.get("value", "")
+
+    covers = [c for c in (work.get("covers") or []) if isinstance(c, int) and c > 0]
 
     return {
         "work_id": work_id,
@@ -73,73 +138,85 @@ def extract_work_data(work):
         "subject_places": work.get("subject_places", []),
         "subject_times": work.get("subject_times", []),
         "subject_people": work.get("subject_people", []),
-        "authors": authors,
-        "covers": work.get("covers", [])
+        "authors": author_keys,
+        "author_names": author_names(author_keys, cache),
+        "covers": covers,
+        "cover_id": covers[0] if covers else None,
     }
 
 
-def collect_books():
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--per-subject", type=int, default=800,
+                    help="works to pull per subject (default 800)")
+    ap.add_argument("--smoke", action="store_true",
+                    help="tiny run: 20 per subject, 3 subjects")
+    args = ap.parse_args()
+
+    subjects = SUBJECTS[:3] if args.smoke else SUBJECTS
+    per_subject = 20 if args.smoke else args.per_subject
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # First collect unique work IDs
-    work_ids = set()
+    # Resume: keep whatever we already have.
+    have = {}
+    if OUTPUT_FILE.exists():
+        for line in OUTPUT_FILE.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    b = json.loads(line)
+                    if b.get("work_id"):
+                        have[b["work_id"]] = b
+                except json.JSONDecodeError:
+                    continue
+        print(f"Resuming: {len(have)} books already collected.")
 
-    print("Collecting work IDs...")
+    print(f"Collecting work ids across {len(subjects)} subjects...")
+    wanted = []
+    seen = set()
+    for s in subjects:
+        ids = collect_work_ids(s, per_subject)
+        new = [i for i in ids if i not in seen]
+        seen.update(new)
+        wanted.extend(new)
+        print(f"  {s:38} {len(ids):5} found, {len(new):5} new")
 
-    for subject in SUBJECTS:
+    todo = [w for w in wanted if w not in have]
+    print(f"\n{len(seen)} unique works, {len(todo)} still need fetching.\n")
 
-        print(f"  Searching subject: {subject}")
+    cache = load_author_cache()
 
-        works = get_subject_works(subject, limit=100)
+    for i, work_id in enumerate(todo, 1):
+        work = get_json(f"{BASE}/works/{work_id}.json")
+        time.sleep(PAUSE)
+        if not work:
+            continue
 
-        for work in works:
-            work_id = work.get("key", "").replace("/works/", "")
+        book = extract(work, cache)
+        if book["title"]:
+            have[work_id] = book
 
-            if work_id:
-                work_ids.add(work_id)
+        if i % 100 == 0 or i == len(todo):
+            with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+                for b in have.values():
+                    f.write(json.dumps(b, ensure_ascii=False) + "\n")
+            AUTHOR_CACHE.write_text(json.dumps(cache, ensure_ascii=False),
+                                    encoding="utf-8")
+            print(f"  {i}/{len(todo)} fetched · {len(have)} books · "
+                  f"{len(cache)} authors known")
 
-    print(f"\nFound {len(work_ids)} unique works.")
-
-    # Retrieve detailed information
-    books = []
-
-    for i, work_id in enumerate(work_ids, start=1):
-
-        try:
-
-            work = get_work(work_id)
-            book = extract_work_data(work)
-
-            books.append(book)
-
-            print(
-                f"[{i}/{len(work_ids)}] "
-                f"{book['title']}"
-            )
-
-            # Be polite to the API
-            time.sleep(0.1)
-
-        except requests.RequestException as e:
-
-            print(
-                f"Failed to retrieve {work_id}: {e}"
-            )
-
-    # Save as JSON Lines
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        for b in have.values():
+            f.write(json.dumps(b, ensure_ascii=False) + "\n")
+    AUTHOR_CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
-        for book in books:
-            f.write(
-                json.dumps(
-                    book,
-                    ensure_ascii=False
-                ) + "\n"
-            )
-
-    print(f"\nSaved {len(books)} books to {OUTPUT_FILE}")
+    withauth = sum(1 for b in have.values() if b.get("author_names"))
+    withcov = sum(1 for b in have.values() if b.get("cover_id"))
+    print(f"\nSaved {len(have)} books to {OUTPUT_FILE}")
+    print(f"  {withauth} have an author name")
+    print(f"  {withcov} have a cover")
+    print("\nNext: python src/data_cleaning.py && python src/build_index.py")
 
 
 if __name__ == "__main__":
-    collect_books()
+    main()

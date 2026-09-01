@@ -53,13 +53,14 @@ def clean_subjects(subjects):
 def create_combined_text(book):
     """Create dense text representation used for embeddings."""
     title = book.get("title", "")
+    authors = " ".join(book.get("author_names", []) or [])
     description = book.get("description", "")
     subjects = " ".join(book.get("subjects", []))
     places = " ".join(clean_text(x) for x in book.get("subject_places", []))
     times = " ".join(clean_text(x) for x in book.get("subject_times", []))
     people = " ".join(clean_text(x) for x in book.get("subject_people", []))
 
-    combined = f"{title} {description} {subjects} {places} {times} {people}"
+    combined = f"{title} {authors} {description} {subjects} {places} {times} {people}"
     return clean_text(combined)
 
 

@@ -25,7 +25,13 @@ def build_embeddings():
     np.save(EMBEDDINGS_FILE, embeddings)
 
     metadata = [
-        {"work_id": b.get("work_id"), "title": b.get("title"), "subjects": b.get("subjects", [])}
+        {
+            "work_id": b.get("work_id"),
+            "title": b.get("title"),
+            "author": (b.get("author_names") or [None])[0],
+            "cover_id": b.get("cover_id"),
+            "subjects": b.get("subjects", []),
+        }
         for b in records
     ]
     with open(METADATA_FILE, "w", encoding="utf-8") as f:
