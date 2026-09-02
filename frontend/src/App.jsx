@@ -110,6 +110,9 @@ function Book3D({ book, index, onPick }) {
         <span className="text-ink">{pct}% alike</span> · {band.label.toLowerCase()}
       </p>
       <p className="font-ui text-[13px] text-ink leading-snug line-clamp-2">{book.title}</p>
+      {book.author && (
+        <p className="font-ui text-[12px] text-ink-soft leading-snug line-clamp-1">{book.author}</p>
+      )}
     </div>
   )
 }
@@ -118,6 +121,7 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [anchor, setAnchor] = useState('')
+  const [anchorAuthor, setAnchorAuthor] = useState('')
   const [trail, setTrail] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -180,13 +184,14 @@ export default function App() {
       })
       if (r.status === 404) {
         setResults([])
-        setError(`"${title}" isn't one of the 826. Start typing and pick from the list.`)
+        setError(`"${title}" isn't one of the 25,820. Start typing and pick from the list.`)
         return
       }
       if (!r.ok) throw new Error('bad status')
       const d = await r.json()
       setResults(d.recommendations || [])
       setAnchor(title)
+      setAnchorAuthor(d.query?.author || '')
       setTrail((p) => (p[p.length - 1] === title ? p : [...p, title]))
       requestAnimationFrame(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -215,6 +220,7 @@ export default function App() {
   const reset = () => {
     setQuery(''); setResults([]); setTrail([]); setAnchor('')
     setError(''); setHasSearched(false); setMatches([]); setOpenList(false)
+    setAnchorAuthor('')
   }
 
   return (
@@ -230,7 +236,7 @@ export default function App() {
 
           <p className="mt-7 mx-auto max-w-[52ch] text-ink-soft text-[17px] leading-relaxed">
             You built somewhere to log what you've read, so I built the opposite.
-            Name a book you loved and 826 of them shuffle to show you the six
+            Name a book you loved and 25,820 of them shuffle to show you the six
             that stand closest on the shelf.
           </p>
           <p className="mt-2 font-type text-[13px] text-ink-soft/70">love, Lakshaa</p>
@@ -277,6 +283,9 @@ export default function App() {
                     className={`w-full text-left px-5 py-3 text-[15px] border-b border-ink/15 last:border-0
                                 ${i === cursor ? 'bg-tape text-ink' : 'hover:bg-ink/5'}`}>
                     {m.title}
+                    {m.author && (
+                      <span className="text-ink-soft"> · {m.author}</span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -335,6 +344,7 @@ export default function App() {
           <section ref={resultsRef} className="mt-16 scroll-mt-6">
             <p className="text-center font-type text-[14px] text-ink-soft">
               standing next to <span className="text-ink">{anchor}</span>
+              {anchorAuthor && <span> by {anchorAuthor}</span>}
             </p>
 
             <div className="mt-9 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-10">

@@ -9,8 +9,8 @@ const IAIN = {
   hair:      '#241610',   // near-black brown
   hairLift:  '#3A2418',   // lighter curl highlights
   beard:     '#2B1C14',   // stubble
-  shirt:     '#F5F3EC',   // white shirt from the photo
-  tie:       '#23211E',   // dark tie — set to null to lose it
+  jumper:    '#6E2A38',   // burgundy
+  jumperRib: '#54202B',   // darker burgundy for the neck ribbing and cuffs
   earring:   true,
   bookCover: '#E8873A',
   mug:       true,
@@ -27,7 +27,7 @@ const CURLS = [
 const HIGHLIGHTS = [[88, 40, 7], [118, 38, 7], [64, 66, 6], [140, 66, 6]]
 
 export default function Reader() {
-  const { skin, skinShade, hair, hairLift, beard, shirt, tie, earring, bookCover, mug } = IAIN
+  const { skin, skinShade, hair, hairLift, beard, jumper, jumperRib, earring, bookCover, mug } = IAIN
 
   return (
     <svg viewBox="0 0 200 210" className="w-full h-full" role="img"
@@ -45,9 +45,14 @@ export default function Reader() {
           {CURLS.map(([cx, cy, r], i) => <circle key={i} cx={cx} cy={cy} r={r} />)}
         </g>
 
-        <path d="M52 186 Q54 140 100 137 Q146 140 148 186Z" fill={shirt} />
-        <path d="M88 137 L100 152 L112 137 Q100 143 88 137Z" fill={skinShade} opacity=".35" />
-        {tie && <path d="M100 152 L106 160 L103 186 L97 186 L94 160Z" fill={tie} />}
+        <path d="M52 186 Q54 140 100 137 Q146 140 148 186Z" fill={jumper} />
+        {/* shoulder falloff, so the knit reads as fabric rather than a flat shape */}
+        <path d="M52 186 Q54 148 74 140 L80 186Z" fill="#000" opacity=".10" />
+        <path d="M148 186 Q146 148 126 140 L120 186Z" fill="#000" opacity=".10" />
+        {/* crew neck: the opening, then the rib around it */}
+        <path d="M86 138 Q100 152 114 138 Q100 146 86 138Z" fill={skinShade} />
+        <path d="M85 137 Q100 151 115 137" stroke={jumperRib} strokeWidth="4.5"
+              fill="none" strokeLinecap="round" />
 
         <rect x="92" y="112" width="16" height="22" rx="7" fill={skinShade} />
 
@@ -88,23 +93,47 @@ export default function Reader() {
         </g>
 
         {/* the book */}
-        <g>
-          <path d="M50 150 L100 142 L150 150 L150 194 L100 186 L50 194Z" fill={bookCover} />
-          <path d="M100 142 L100 186" stroke="#1A1A18" strokeWidth="2" opacity=".35" />
-          <path d="M56 152 L100 145 L100 183 L56 190Z" fill="#FBF8EC" />
-          <path d="M144 152 L100 145 L100 183 L144 190Z" fill="#FBF8EC" />
+        {/* SLEEVES — drawn before the book so the arms pass BEHIND it */}
+        <path d="M68 144 Q54 156 53 174" stroke={jumper} strokeWidth="15"
+              fill="none" strokeLinecap="round" />
+        <path d="M132 144 Q146 156 147 174" stroke={jumper} strokeWidth="15"
+              fill="none" strokeLinecap="round" />
+        <path d="M53 174 L53 178" stroke={jumperRib} strokeWidth="15"
+              fill="none" strokeLinecap="round" />
+        <path d="M147 174 L147 178" stroke={jumperRib} strokeWidth="15"
+              fill="none" strokeLinecap="round" />
+        {/* wrists emerging from the cuffs */}
+        <path d="M53 180 L55 184" stroke={skin} strokeWidth="12"
+              fill="none" strokeLinecap="round" />
+        <path d="M147 180 L145 184" stroke={skin} strokeWidth="12"
+              fill="none" strokeLinecap="round" />
 
-          <g className="animate-pageflip" style={{ transformOrigin: '100px 164px', transformBox: 'fill-box' }}>
-            <path d="M100 145 L142 152 L142 189 L100 183Z" fill="#F2EEE0" stroke="#DED8C6" strokeWidth="1" />
+        {/* THE BOOK — narrower than his shoulders, so the arms show either side */}
+        <g>
+          <path d="M60 140 Q100 152 140 140 L140 186 Q100 198 60 186Z" fill={bookCover} />
+          <path d="M65 145 Q100 156 135 145 L135 182 Q100 193 65 182Z" fill="#FBF8EC" />
+          <path d="M100 156 L100 193" stroke="#C9BFA6" strokeWidth="1.6" opacity=".9" />
+
+          <g className="animate-pageflip"
+             style={{ transformOrigin: '0% 50%', transformBox: 'fill-box' }}>
+            <path d="M100 156 Q117 152 135 145 L135 182 Q117 189 100 193Z"
+                  fill="#F4F0E2" stroke="#DED8C6" strokeWidth="1" />
           </g>
 
-          <g stroke="#B9B2A0" strokeWidth="1.6" strokeLinecap="round" opacity=".8">
-            <path d="M64 160 L92 156" /><path d="M64 167 L92 163" /><path d="M64 174 L86 170" />
+          <g stroke="#B9B2A0" strokeWidth="1.5" strokeLinecap="round" opacity=".75" fill="none">
+            <path d="M72 157 Q84 162 94 165" />
+            <path d="M72 165 Q84 170 94 173" />
+            <path d="M72 173 Q83 177 91 179" />
           </g>
         </g>
 
-        <path d="M54 180 Q44 166 48 152" stroke={skin} strokeWidth="13" fill="none" strokeLinecap="round" />
-        <path d="M146 180 Q156 166 152 152" stroke={skin} strokeWidth="13" fill="none" strokeLinecap="round" />
+        {/* HANDS — after the book, so they grip the front of it */}
+        <ellipse cx="59" cy="180" rx="8" ry="8.5" fill={skin} />
+        <ellipse cx="141" cy="180" rx="8" ry="8.5" fill={skin} />
+        <path d="M63 176 Q69 172 74 169" stroke={skin} strokeWidth="5"
+              fill="none" strokeLinecap="round" />
+        <path d="M137 176 Q131 172 126 169" stroke={skin} strokeWidth="5"
+              fill="none" strokeLinecap="round" />
       </g>
 
       {mug && (

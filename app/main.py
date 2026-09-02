@@ -189,7 +189,9 @@ def recommend_books(req: RecommendRequest):
     idx, _ = _resolve(title=req.title)
     if idx is None:
         raise HTTPException(status_code=404, detail="Book not found in database.")
-    return {"recommendations": _neighbours(idx, req.top_n)}
+    # `query` echoes the matched book so callers can show its author and cover.
+    # Additive: existing clients that only read `recommendations` are unaffected.
+    return {"query": _payload(idx), "recommendations": _neighbours(idx, req.top_n)}
 
 
 class SimilarRequest(BaseModel):
