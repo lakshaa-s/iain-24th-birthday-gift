@@ -75,13 +75,19 @@ title_to_idx = {}          # exact lowercase title -> idx (first wins)
 norm_title_to_idxs = defaultdict(list)
 isbn_to_idx = {}
 author_of = {}
+# Normalised title per book, computed once at startup. /search used to derive
+# these on every keystroke, which is ~26k unicode normalisations per request
+# once the corpus got big.
+norm_titles = [""] * len(metadata)
 
 for i, book in enumerate(metadata):
     title = book.get("title")
     if not title:
         continue
+    nt = norm_title(title)
+    norm_titles[i] = nt
     title_to_idx.setdefault(title.lower(), i)
-    norm_title_to_idxs[norm_title(title)].append(i)
+    norm_title_to_idxs[nt].append(i)
     author_of[i] = norm_author(book.get("author"))
     for raw in (book.get("isbns") or []):
         isbn = norm_isbn(raw)
@@ -139,13 +145,13 @@ def _neighbours(idx, top_n, drop_same_title=True):
     sims = embeddings @ embeddings[idx]
     order = np.argsort(sims)[::-1]
 
-    anchor = norm_title(metadata[idx].get("title", ""))
+    anchor = norm_titles[idx]
     seen_titles = {anchor}
     out = []
     for j in order:
         if j == idx:
             continue
-        nt = norm_title(metadata[j].get("title", ""))
+        nt = norm_titles[j]
         if drop_same_title:
             # Same normalised title: a straight reprint.
             if nt in seen_titles:
@@ -233,9 +239,7 @@ def search_books(q: str = "", limit: int = 5):
 
     nq = norm_title(query)
     scored = []
-    for i, book in enumerate(metadata):
-        title = book.get("title") or ""
-        nt = norm_title(title)
+    for i, nt in enumerate(norm_titles):
         if not nt:
             continue
 
@@ -260,7 +264,7 @@ def search_books(q: str = "", limit: int = 5):
     results = []
     for _, _, i in scored:
         book = metadata[i]
-        nt = norm_title(book.get("title", ""))
+        nt = norm_titles[i]
         if nt in seen:
             continue
         seen.add(nt)

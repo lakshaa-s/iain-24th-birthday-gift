@@ -1,1 +1,8 @@
 __pycache__/
+# Large intermediates — regenerable from data_collection.py, and books_clean.jsonl
+# lands near GitHub's 100MB hard limit at 25k books. The API only needs
+# embeddings.npy and books_metadata.json, both of which stay committed.
+data/raw/books.jsonl
+data/processed/books_clean.jsonl
+data/raw/authors.json
+scrape.log

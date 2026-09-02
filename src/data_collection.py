@@ -58,16 +58,35 @@ SUBJECTS = [
 ]
 
 
-def get_json(url, params=None):
+def get_json(url, params=None, retries=4):
+    """Fetch JSON, retrying transient failures with backoff.
+
+    Open Library will reset connections and rate-limit over a run this long.
+    ConnectionResetError is an OSError, not a URLError, so an earlier version
+    of this caught neither and died three hours in. Catch OSError and retry.
+    """
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError,
-            TimeoutError, json.JSONDecodeError):
-        return None
+
+    for attempt in range(retries):
+        req = urllib.request.Request(url, headers=HEADERS)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None                      # genuinely absent
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                time.sleep(2 ** attempt)         # 1s, 2s, 4s
+                continue
+            return None
+        except (OSError, TimeoutError, json.JSONDecodeError):
+            # OSError covers ConnectionResetError, URLError and socket timeouts.
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return None
+    return None
 
 
 def collect_work_ids(subject, target):
@@ -186,7 +205,15 @@ def main():
 
     cache = load_author_cache()
 
-    for i, work_id in enumerate(todo, 1):
+    def flush():
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            for b in have.values():
+                f.write(json.dumps(b, ensure_ascii=False) + "\n")
+        AUTHOR_CACHE.write_text(json.dumps(cache, ensure_ascii=False),
+                                encoding="utf-8")
+
+    try:
+      for i, work_id in enumerate(todo, 1):
         work = get_json(f"{BASE}/works/{work_id}.json")
         time.sleep(PAUSE)
         if not work:
@@ -197,18 +224,13 @@ def main():
             have[work_id] = book
 
         if i % 100 == 0 or i == len(todo):
-            with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-                for b in have.values():
-                    f.write(json.dumps(b, ensure_ascii=False) + "\n")
-            AUTHOR_CACHE.write_text(json.dumps(cache, ensure_ascii=False),
-                                    encoding="utf-8")
+            flush()
             print(f"  {i}/{len(todo)} fetched · {len(have)} books · "
                   f"{len(cache)} authors known")
+    except KeyboardInterrupt:
+        print("\n  interrupted — saving what we have")
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        for b in have.values():
-            f.write(json.dumps(b, ensure_ascii=False) + "\n")
-    AUTHOR_CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    flush()
 
     withauth = sum(1 for b in have.values() if b.get("author_names"))
     withcov = sum(1 for b in have.values() if b.get("cover_id"))
